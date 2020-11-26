@@ -1,0 +1,144 @@
+/*RAW 
+from snowsql :
+use role accountadmin;
+use warehouse CTOINGEST;
+use database prd;
+use schema raw;
+put file:///Users/drichert/Downloads/archive/*id.json @youtube/id  auto_compress=true;
+
+*/
+list @youtube/json/id;
+
+
+/* This first table is for the categories per Country */
+
+create or replace transient table categories (v variant, 
+                                               t timestamp, 
+                                               country varchar, 
+                                               filename varchar, 
+                                               filerownum number);
+
+copy into categories (v,t,country,filename, filerownum) from 
+
+            (select $1, CURRENT_TIMESTAMP, 
+                 lower(substr(METADATA$FILENAME,9, 2)), 
+                 METADATA$FILENAME, 
+                 METADATA$FILE_ROW_NUMBER 
+             from @youtube/json/id (file_format => json)
+) ;
+
+Select * from categories limit 20;
+Select count (1) from categories;
+Select country, v:items[0].id::varchar category_id, v:items[0].snippet.title::varchar title  from categories;
+
+
+
+--https://community.snowflake.com/s/article/json-data-parsing-in-snowflake
+
+create or replace transient table cat (
+  Category varchar,
+  Country varchar,
+  ID number,
+  Loadtime timestamp);
+  
+copy into cat (Category, Country, ID, Loadtime) from
+
+--ok
+(select substr(METADATA$FILENAME,9, 2) country,
+ t.value:snippet.title category, 
+ t.value:id cat_id,  
+ current_timestamp
+ from @youtube/json/id/ (file_format => 'json') as S, table(flatten(S.$1,'items')) t);
+--
+
+--ok
+
+select 
+country,
+f.value:snippet.title cat, 
+f.value:id id , 
+ current_timestamp
+ from categories c, Table(Flatten(c.v,'items')) f ;
+
+
+
+/* This second table is for the videos which I converted to JSON to have a more robust loading scheme (saw missing delimitators in FRvideos.csv). 
+Converted them at https://www.convertcsv.com/csv-to-json.htm
+Use the following command to split files
+jq -c ".[]" USvideos.json | split -l 1000;
+*/
+
+/* run from snowsql
+
+use role accountadmin;
+use warehouse CTOINGEST;
+use database prd;
+use schema raw;
+put file:///Users/drichert/Downloads/videos/USvideos/x* @youtube/json/us  auto_compress=true;
+put file:///Users/drichert/Downloads/videos/RUvideos/x* @youtube/json/ru  auto_compress=true;
+put file:///Users/drichert/Downloads/videos/MXvideos/x* @youtube/json/mx  auto_compress=true;
+put file:///Users/drichert/Downloads/videos/KRvideos/x* @youtube/json/kr  auto_compress=true;
+put file:///Users/drichert/Downloads/videos/JPvideos/x* @youtube/json/jp  auto_compress=true;
+put file:///Users/drichert/Downloads/videos/INvideos/x* @youtube/json/in  auto_compress=true;
+put file:///Users/drichert/Downloads/videos/GBvideos/x* @youtube/json/gb  auto_compress=true;
+put file:///Users/drichert/Downloads/videos/FRvideos/x* @youtube/json/fr  auto_compress=true;
+put file:///Users/drichert/Downloads/videos/DEvideos/x* @youtube/json/de  auto_compress=true;
+put file:///Users/drichert/Downloads/videos/CAvideos/x* @youtube/json/ca  auto_compress=true;
+*/
+
+Create or replace transient table videos_raw (v variant, 
+                                               t timestamp, 
+                                              country varchar,
+                                               filename varchar, 
+                                               filerownum number);
+
+copy into videos_raw (v,t,country, filename, filerownum) from 
+    (select $1, CURRENT_TIMESTAMP, lower(substr(METADATA$FILENAME,6,2)), METADATA$FILENAME, METADATA$FILE_ROW_NUMBER from @youtube/json/ (file_format => json)) ;
+
+Select count (1) from videos_raw;
+Select * from videos_raw limit 20;
+
+--find the command to check load errors
+
+
+
+Select V:category_id CAT_ID, V:channel_title CH_TITLE, V:comment_count number, V:comments_disabled, V:description, V:dislikes number, V:likes number, V:publish_time, V:ratings_disabled, V:tags, V:thumbnail_link, V:title, V:trending_date, V:video_error_or_removed, V:video_id, V:views number,country, t from videos_raw limit 100;
+
+--need to convert csv into json if want to bring it into the variant format.
+
+/* alternate, old way of doing things 
+
+create or replace transient table videos (
+video_id varchar,
+trending_date varchar,
+title varchar,
+channel_title varchar,
+category_id varchar,
+publish_time  varchar,
+tags varchar,
+"views" varchar,
+likes varchar,
+dislikes varchar,
+comment_count varchar,
+thumbnail_link varchar,
+comments_disabled varchar,
+ratings_disabled varchar,
+video_error_or_removed varchar,
+description varchar,
+load_ts timestamp,
+filename varchar, 
+country varchar);
+
+
+ALTER FILE FORMAT "PRD"."RAW".CSV SET COMPRESSION = 'AUTO' FIELD_DELIMITER = ',' RECORD_DELIMITER = '\n' SKIP_HEADER = 1 FIELD_OPTIONALLY_ENCLOSED_BY = 'NONE' TRIM_SPACE = TRUE ERROR_ON_COLUMN_COUNT_MISMATCH = TRUE ESCAPE = 'NONE' ESCAPE_UNENCLOSED_FIELD = '\134' DATE_FORMAT = 'AUTO' TIMESTAMP_FORMAT = 'AUTO' NULL_IF = ('NULL') ;
+--ENCODING='ISO-8859-1'
+--copy into videos from (Select $1,to_date($2, 'YY.DD.MM'),$3,$4,$5,to_timestamp($6,'YYYY-MM-DDTHH:MI:SS.000Z'),$7, $8,$9,$10,$11,$12,$13,$14,$15, $16, CURRENT_TIMESTAMP, METADATA$FILENAME, substr(METADATA$FILENAME,5, 2) from @youtube/csv (file_format => csv)  ) ON_ERROR = CONTINUE;
+
+copy into videos from (Select $1,$2,$3,$4,$5,$6,$7, $8,$9,$10,$11,$12,$13,$14,$15, $16, CURRENT_TIMESTAMP, METADATA$FILENAME, substr(METADATA$FILENAME,5, 2) from @youtube/csv (file_format => csv)  ) ON_ERROR = CONTINUE;
+--a bit of logic built into it. Could ingest json variant?
+
+select count (1) from videos;
+select * from videos limit 20;
+
+--remove @youtube/json;
+*/
