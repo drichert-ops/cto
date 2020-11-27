@@ -1,0 +1,205 @@
+/*PREPROCESSING AND LOAD USING PUT COMMAND
+
+in snowsql :
+use role accountadmin;
+use warehouse CTOINGEST;
+use database prd;
+use schema raw;
+
+Load Category ids into RAW ZONE
+put file:///Users/drichert/Downloads/archive/*id.json @youtube/id  auto_compress=true;
+*/
+
+
+/* This second table is for the videos which I converted to JSON to have a more robust loading scheme (saw missing delimitators in FRvideos.csv and had problems with UTF-8 encoding). 
+Converted them at https://www.convertcsv.com/csv-to-json.htm
+Use the following command to split files
+jq -c ".[]" USvideos.json | split -l 1000;
+
+Load video statistics into RAW ZONE
+put file:///Users/drichert/Downloads/videos/USvideos/x* @youtube/json/us  auto_compress=true;
+put file:///Users/drichert/Downloads/videos/RUvideos/x* @youtube/json/ru  auto_compress=true;
+put file:///Users/drichert/Downloads/videos/MXvideos/x* @youtube/json/mx  auto_compress=true;
+put file:///Users/drichert/Downloads/videos/KRvideos/x* @youtube/json/kr  auto_compress=true;
+put file:///Users/drichert/Downloads/videos/JPvideos/x* @youtube/json/jp  auto_compress=true;
+put file:///Users/drichert/Downloads/videos/INvideos/x* @youtube/json/in  auto_compress=true;
+put file:///Users/drichert/Downloads/videos/GBvideos/x* @youtube/json/gb  auto_compress=true;
+put file:///Users/drichert/Downloads/videos/FRvideos/x* @youtube/json/fr  auto_compress=true;
+put file:///Users/drichert/Downloads/videos/DEvideos/x* @youtube/json/de  auto_compress=true;
+put file:///Users/drichert/Downloads/videos/CAvideos/x* @youtube/json/ca  auto_compress=true;
+
+list @youtube/json/id;
+*/
+
+/* In the Web Interface */
+
+
+/* SET UP RAW ZONE AND COPY DATA INTO IT */
+
+/* Table with categories per Country */
+create or replace transient table cat_raw (v variant, 
+                                               t timestamp, 
+                                               country varchar, 
+                                               filename varchar, 
+                                               filerownum number);
+
+copy into cat_raw (v,t,country,filename, filerownum) from 
+
+            (select $1, CURRENT_TIMESTAMP, 
+                 lower(substr(METADATA$FILENAME,9, 2)), 
+                 METADATA$FILENAME, 
+                 METADATA$FILE_ROW_NUMBER 
+             from @youtube/json/id (file_format => json)
+) ;
+
+Select * from cat_raw; --10 rows
+
+/* Table with video statistics, loadtime, metadata file name */
+
+Create or replace transient table videos_raw (v variant, 
+                                               t timestamp, 
+                                              country varchar,
+                                               filename varchar, 
+                                               filerownum number);
+
+copy into videos_raw (v,t,country, filename, filerownum) from 
+    (select $1, CURRENT_TIMESTAMP, lower(substr(METADATA$FILENAME,6,2)), METADATA$FILENAME, METADATA$FILE_ROW_NUMBER from @youtube/json/ (file_format => json)) ;
+
+Select count (1) from videos_raw; --416901 rows
+Select * from videos_raw limit 20;
+
+-- to do find the command to check load errors
+
+
+/* SETTING UP AND Transforming into INT ZONE */
+
+--tranformation set the dates and timestamps, varchars and numbers
+
+
+--build table in the int schema, flattening items
+create or replace transient table int.cat_int (
+                        country varchar,
+                        category varchar,
+                        catid number,
+                        load_ts timestamp,
+                        hashcheck number
+);
+
+--initial load
+insert into int.cat_int (select 
+                                    country,
+                                    f.value:snippet.title, 
+                                    f.value:id, 
+                                    current_timestamp,
+                                    hash(country,f.value:snippet.title, f.value:id)
+ from cat_raw c, Table(Flatten(c.v,'items')) f ) ;
+
+/*--merge new records --to work on
+merge into int.cat_int ci using (select 
+                                    country c,
+                                    f.value:snippet.title t, 
+                                    f.value:id i, 
+                                    current_timestamp ts,
+                                    hash(country,f.value:snippet.title, f.value:id) h
+ from cat_raw c, Table(Flatten(c.v,'items')) f ) on c.hash(country,f.value:snippet.title, f.value:id)=ci.hashcheck
+ when matched then update set
+ when not matched then insert t,i,ts, h
+ ;
+*/
+
+create or replace transient table int.videos_int  (
+  catid number, 
+  chtitle varchar,
+  com_cnt number,
+  com_disabled varchar,
+  description varchar,
+  dislikes number,
+  likes number,
+  publishtime timestamp,
+  ratings_disable varchar,
+  tags varchar,
+  thumbnail varchar,
+  videotitle varchar,
+  trendingdate date,
+  videoerror varchar,
+  videoid varchar,
+  "views" number,
+  country varchar,
+  loadtime timestamp,
+  hashcheck number);
+
+/* insert into int.videos_int */
+
+insert into int.videos_int (Select V:category_id, 
+    V:channel_title, 
+    V:comment_count, 
+    V:comments_disabled, 
+    V:description, 
+    V:dislikes, 
+    V:likes, 
+    to_timestamp_ntz(parse_json(V):publish_time), 
+    V:ratings_disabled,
+    V:tags, 
+    V:thumbnail_link, 
+    V:title,
+    to_date(to_varchar((parse_json(V):trending_date)), 'YY.DD.MM'), 
+    V:video_error_or_removed, 
+    V:video_id, 
+    V:views number,
+    country, 
+    t,
+    hash(*)
+from videos_raw);
+
+select * from "PRD"."INT"."VIDEOS_INT" limit 20;
+
+/* Create Business View */
+
+create or replace view biz.youtube as select 
+  v.country "Country",
+  category "Category", 
+  chtitle "Channel Name",
+  com_cnt "# of Comments",
+  com_disabled "Comments Disabled",
+  description "Video Description",
+  dislikes "# of Dislikes",
+  likes "# of Likes",
+  publishtime "Published",
+  ratings_disable "Ratings Disabled",
+  tags Tags,
+  thumbnail Thumbnail,
+  videotitle "Video Title",
+  trendingdate "Trending Date",
+  videoerror "Video Error or Removed",
+  "views" "# of Views"
+  
+from "INT"."VIDEOS_INT" v inner join "INT"."CAT_INT" c on v.catid=c.catid;
+
+--Queries 
+--Show Top 10 viewed videos by each category  
+Select * from (
+Select "Category",
+"Video Title", 
+sum("# of Views") NumViews, 
+row_number() over (partition by "Category" order by NumViews desc) rank 
+from biz.youtube group by 1,2 
+) where rank <=10;
+
+--Show 5 overall diskliked videos
+Select top 5 "Video Title", sum("# of Dislikes") Dislikes from biz.youtube group by 1 order by Dislikes desc;
+
+--Show Top 5 viewed videos by country
+Select * from (
+Select "Country",
+"Video Title", 
+sum("# of Views") NumViews, 
+row_number() over (partition by "Country" order by NumViews desc) rank 
+from biz.youtube group by 1,2
+) where rank <=5;
+
+--Show the aveage number of likes in Autos & Vehicles category
+select "Category", avg("# of Likes") from biz.youtube where "Category" = 'Autos & Vehicles' group by 1 ;
+
+-- Show number of videos broken down by the file name (directory) & date they were loaded
+Select substr(filename, 6,2) Dir, date(loadtime), count(videoid)  from int.videos_int  group by 1,2 order by Dir asc;
+
