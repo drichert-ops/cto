@@ -1,10 +1,16 @@
 /*PREPROCESSING AND LOAD USING PUT COMMAND
 
+. .zsrch
+snowsql -a eu_demo47.eu-central-1 -u John
+
 in snowsql :
 use role accountadmin;
 use warehouse CTOINGEST;
 use database prd;
 use schema raw;
+
+drop stage if exists youtube;
+CREATE STAGE "PRD"."RAW".youtube;
 
 Load Category ids into RAW ZONE
 put file:///Users/drichert/Downloads/archive/*id.json @youtube/id  auto_compress=true;
@@ -28,9 +34,9 @@ put file:///Users/drichert/Downloads/videos/FRvideos/x* @youtube/json/fr  auto_c
 put file:///Users/drichert/Downloads/videos/DEvideos/x* @youtube/json/de  auto_compress=true;
 put file:///Users/drichert/Downloads/videos/CAvideos/x* @youtube/json/ca  auto_compress=true;
 
-list @youtube/json/id;
-*/
 
+*/
+list @youtube/json/;
 /* In the Web Interface */
 
 
@@ -49,8 +55,9 @@ copy into cat_raw (v,t,country,filename, filerownum) from
                  lower(substr(METADATA$FILENAME,9, 2)), 
                  METADATA$FILENAME, 
                  METADATA$FILE_ROW_NUMBER 
-             from @youtube/json/id (file_format => json)
+             from @youtube/id (file_format => json)
 ) ;
+
 
 Select * from cat_raw; --10 rows
 
@@ -66,7 +73,7 @@ copy into videos_raw (v,t,country, filename, filerownum) from
     (select $1, CURRENT_TIMESTAMP, lower(substr(METADATA$FILENAME,6,2)), METADATA$FILENAME, METADATA$FILE_ROW_NUMBER from @youtube/json/ (file_format => json)) ;
 
 Select count (1) from videos_raw; --416901 rows
-Select * from videos_raw limit 20;
+Select * from videos_raw order by V limit 100;
 
 -- to do find the command to check load errors
 
@@ -94,6 +101,7 @@ insert into int.cat_int (select
                                     hash(country,f.value:snippet.title, f.value:id)
  from cat_raw c, Table(Flatten(c.v,'items')) f ) ;
 
+select * from int.cat_int limit 20;
 /*--merge new records --to work on
 merge into int.cat_int ci using (select 
                                     country c,
@@ -125,6 +133,7 @@ create or replace transient table int.videos_int  (
   videoid varchar,
   "views" number,
   country varchar,
+  filename varchar,
   loadtime timestamp,
   hashcheck number);
 
@@ -147,11 +156,21 @@ insert into int.videos_int (Select V:category_id,
     V:video_id, 
     V:views number,
     country, 
+    filename,
     t,
     hash(*)
 from videos_raw);
 
 select * from "PRD"."INT"."VIDEOS_INT" limit 20;
+
+
+/*Duplicate Check */
+SELECT video_id, TRENDING_DATE, _File, sum(LIKES), sum(dislikes), COUNT(*)
+FROM int.videos_int
+where lower(substring(_file, 11,2))='jp'
+GROUP BY 1, 2, 3 
+HAVING COUNT(*) > 1;
+
 
 /* Create Business View */
 
@@ -174,32 +193,5 @@ create or replace view biz.youtube as select
   "views" "# of Views"
   
 from "INT"."VIDEOS_INT" v inner join "INT"."CAT_INT" c on v.catid=c.catid;
-
---Queries 
---Show Top 10 viewed videos by each category  
-Select * from (
-Select "Category",
-"Video Title", 
-sum("# of Views") NumViews, 
-row_number() over (partition by "Category" order by NumViews desc) rank 
-from biz.youtube group by 1,2 
-) where rank <=10;
-
---Show 5 overall diskliked videos
-Select top 5 "Video Title", sum("# of Dislikes") Dislikes from biz.youtube group by 1 order by Dislikes desc;
-
---Show Top 5 viewed videos by country
-Select * from (
-Select "Country",
-"Video Title", 
-sum("# of Views") NumViews, 
-row_number() over (partition by "Country" order by NumViews desc) rank 
-from biz.youtube group by 1,2
-) where rank <=5;
-
---Show the aveage number of likes in Autos & Vehicles category
-select "Category", avg("# of Likes") from biz.youtube where "Category" = 'Autos & Vehicles' group by 1 ;
-
--- Show number of videos broken down by the file name (directory) & date they were loaded
-Select substr(filename, 6,2) Dir, date(loadtime), count(videoid)  from int.videos_int  group by 1,2 order by Dir asc;
-
+                                
+                               
