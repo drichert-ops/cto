@@ -1,0 +1,73 @@
+
+use role accountadmin; 
+use warehouse ingest;
+use database sap;
+use schema sap;
+
+
+--taking the SAP TCURR table and getting the date and fiscal period out of it
+create or replace view "CURR"."PUBLIC".tcurr_v as 
+select
+ mandt,
+ kurst,
+ fcurr,
+ tcurr,
+ gdatu,
+ ukurs,
+ ffact,
+ tfact,
+ to_date (substring(to_varchar(99999999 - gdatu),1,8))  gdatu_date,
+ YEAR( to_date(substring(to_varchar(99999999 - gdatu),1,8))) as  Year,
+ MONTH( to_date (substring(to_varchar(99999999 - gdatu),1,8))) as Month,
+ case when MONTH(to_date (substring(to_varchar(99999999 - gdatu),1,8))) < 10 then YEAR( to_date(substring(to_varchar(99999999 - gdatu),1,8)))||'00'||MONTH(to_date (substring(to_varchar(99999999 - gdatu),1,8))) else YEAR( to_date(substring(to_varchar(99999999 - gdatu),1,8)))||'0'||MONTH(to_date (substring(to_varchar(99999999 - gdatu),1,8))) end as fiscper,
+ DAYOFMONTH( to_date (substring(to_varchar(99999999 - gdatu),1,8))) as Day,
+ substring( to_date (substring(to_varchar(99999999 - gdatu),1,8)),1,4)  as _Year,
+ substring( to_date (substring(to_varchar(99999999 - gdatu),1,8)),6,2)  as _Month,
+ substring( to_date (substring(to_varchar(99999999 - gdatu),1,8)),9,2)  as _Day
+
+from "SAP"."SAP"."ztcurr_attr"
+order by gdatu;
+
+--create view to kill case sensitivity
+
+
+create view "CURR"."PUBLIC"."FX_V" 
+as
+Select 
+"Currency" as currency,
+"Currency Name" as currency_name,
+"Currency Unit" as currency_unit,
+"Currency Description" as currency_description,
+"Currency PairId" as currency_pairid,
+"Currency Exchange" as currency_exchange,
+"Indicator" as indicator,
+"Indicator Name" as indicator_name,
+"Units" as units,
+"Scale" as scale,
+"Frequency" as frequency,
+"Date" as date,
+"Value" as value
+from 
+"KNOEMA_ECONOMY_DATA_ATLAS"."ECONOMY"."EXRATESCC2018";
+
+
+create or replace view "CURR"."PUBLIC"."0fi_ar_4_to_USD_V" as 
+
+select 
+    s.belnr as Document_Number, 
+    s.buzei as Line_Item, 
+    s.kunnr as Customer_Number, 
+    s.fiscper as Fiscal_Period, 
+    s.bldat as Document_date,
+    s.lcurr as Local_currency, 
+    to_number(s.dmshb,38,4) as Amt_in_Local_Curr,
+    fx.currency_unit as To_Currency,
+    min(fx.value) as FX_rate,
+    s.dmshb*min(fx.value) as Amt_in_Global_Currency  
+from sap.sap."0fi_ar_4" s inner join  curr.public.fx_v fx 
+where s.lcurr= substring(fx.currency, 1,3)
+AND s.bldat=fx.date
+AND fx.indicator_name = 'Close' 
+AND fx.currency_unit = 'USD'
+AND fx.frequency = 'D'
+group by s.belnr, s.buzei, s.kunnr, s.fiscper, s.bldat,s.lcurr, s.dmshb, fx.currency_unit;
